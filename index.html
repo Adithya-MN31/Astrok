@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Junior Astronaut Mission Trainer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css?v=3">
+</head>
+<body>
+  <div class="app">
+
+    <header class="topbar">
+      <div class="brand">
+        <div class="emblem">🌍</div>
+        <h1>Junior Astronaut<br>Mission Trainer</h1>
+      </div>
+      <div class="profile">
+        <div class="avatar">🧑‍🚀</div>
+        <div class="pinfo">
+          <strong id="pName">Student Explorer</strong>
+          <small>Level <span id="pLevel">1</span></small>
+          <div class="bar sm"><i id="pBar"></i></div>
+        </div>
+        <div class="xp">⭐<small><span id="pXp">0</span> XP</small></div>
+      </div>
+    </header>
+
+    <nav class="side" id="nav" aria-label="Main">
+      <button data-view="home" class="active">🏠 Home</button>
+      <button data-view="modules">🎓 Training Modules</button>
+      <button data-view="missions">🚀 Missions</button>
+      <button data-view="outpost">🌙 Outpost Survival</button>
+      <button data-view="nasa">🛰️ NASA Live</button>
+      <button data-view="games">🎮 Games</button>
+      <button data-view="progress">📊 Progress</button>
+      <button data-view="leaderboard">🏆 Leaderboard</button>
+      <button data-view="settings">⚙️ Settings</button>
+    </nav>
+
+    <main id="view"></main>
+
+    <aside class="chat" aria-label="Astro assistant">
+      <div class="chat-heading">
+        <div>
+          <strong>Astro AI</strong>
+          <small>Powered by Gemini + NASA data</small>
+        </div>
+        <button class="clear-chat" id="clearChat" type="button" aria-label="Clear chat">⟲</button>
+      </div>
+      <div class="bubble" id="botLine">Hi! I'm Astro, your AI Mission Assistant. How can I help you today?</div>
+      <div class="bot" aria-hidden="true">🤖</div>
+      <div class="chips">
+        <button data-say="Explain this mission">✨ Explain this mission</button>
+        <button data-say="Give me a hint">💡 Give me a hint</button>
+        <button data-say="Show my progress">🎯 Show my progress</button>
+        <button data-say="Teach me about spacewalks">🧑‍🚀 Teach me about spacewalks</button>
+        <button data-say="Show the NASA picture of the day">🌌 NASA picture of the day</button>
+        <button data-say="Any asteroids today?">☄️ Asteroids today</button>
+      </div>
+      <div class="log" id="log" aria-live="polite"></div>
+      <form class="ask" id="askForm">
+        <input id="askInput" type="text" placeholder="Ask me anything…" autocomplete="off" aria-label="Ask Astro">
+        <button type="submit" aria-label="Send">➤</button>
+      </form>
+      <p class="chat-note">AI can make mistakes. Check important facts.</p>
+    </aside>
+  </div>
+
+  <div class="modal" id="modal" hidden>
+    <div class="sheet" role="dialog" aria-modal="true">
+      <button class="close" id="closeModal" aria-label="Close">✕</button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
+  <script src="js/missions.js?v=3"></script>
+  <script src="js/script.js?v=3"></script>
+  <script src="js/nasa.js?v=3"></script>
+  <script src="js/games.js?v=3"></script>
+  <script src="js/astro.js?v=3"></script>
+  <script src="js/sync.js?v=3"></script>
+</body>
+</html>
