@@ -40,7 +40,7 @@
       const m = MISSIONS[0];
       return `
       <section class="hero">
-        <h2>Welcome, Commander!</h2>
+        <h2>Welcome, ${esc(state.name)}!</h2>
         <p class="sub">Your journey to becoming a junior astronaut starts here.</p>
         <div class="astro" aria-hidden="true">🧑‍🚀</div>
       </section>
@@ -118,19 +118,10 @@
     settings() {
       return `<h2>Settings</h2>
         <div class="card item" style="margin-top:14px;display:block">
-          <label for="nameIn"><b>Your name</b></label>
-          <input type="text" id="nameIn" maxlength="24" value="${esc(state.name)}" style="margin:8px 0 12px">
-          <button class="btn" id="saveName">Save name</button>
+          <b>Your astronaut name</b>
+          <p class="sub" style="margin:6px 0 12px">You are signed in as <b>${esc(state.name)}</b>. Type this same name on any device to get your progress back.</p>
+          <button class="btn" id="logout">Switch astronaut</button>
           <button class="btn ghost" id="reset">Reset progress</button>
-        </div>
-        <div class="card item" style="margin-top:14px;display:block">
-          <b>Save code</b>
-          <p class="sub" style="margin:4px 0 8px">Your progress is saved in the game database. To continue on another device, open Settings there and load this code.</p>
-          <input type="text" id="myCode" readonly value="${esc(window.astroPlayerId || 'Database not available')}" aria-label="Your save code">
-          <p style="margin:12px 0 6px"><b>Load a save code</b></p>
-          <input type="text" id="codeIn" placeholder="Paste a save code" autocomplete="off" aria-label="Save code to load" style="margin-bottom:10px">
-          <button class="btn" id="loadCode">Load</button>
-          <p class="sub" id="codeMsg"></p>
         </div>`;
     }
   };
@@ -468,7 +459,7 @@
         state.name = ($('#nameIn').value.trim() || 'Student Explorer').slice(0, 24);
         save(); renderHeader(); return go('settings');
       case 'reset':
-        if (confirm('Reset all progress?')) { state = fresh(); save(); renderHeader(); go('home'); }
+        if (confirm('Reset all progress?')) { state = { ...fresh(), name: state.name }; save(); renderHeader(); go('home'); }
     }
   });
 

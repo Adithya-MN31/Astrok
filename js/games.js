@@ -2,6 +2,7 @@
   const view = document.getElementById('view');
   const nav = document.getElementById('nav');
   const KEY = 'astro-games-v1';
+  const UNLOCK_ALL = false;      // set to true to open every level from the start (handy for testing)
   let db = { best: {}, won: {} };
   try { db = { ...db, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; } catch (e) { /* storage unavailable */ }
   const saveDb = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* ignore */ } };
@@ -12,11 +13,16 @@
   const shuffle = a => { const b = [...a]; for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
   const rnd = n => Math.floor(Math.random() * n);
 
-  let timers = [], cleanups = [], handler = null, submitH = null, current = null;
+  let timers = [], cleanups = [], handler = null, submitH = null, current = null, curLv = 1, curL = {};
   const clearTimers = () => { timers.forEach(t => { clearTimeout(t); clearInterval(t); }); timers = []; cleanups.forEach(f => f()); cleanups = []; };
   const after = (fn, ms) => { const t = setTimeout(() => { if (alive()) fn(); }, ms); timers.push(t); return t; };
   const every = (fn, ms) => { const t = setInterval(() => { if (alive()) fn(); else clearInterval(t); }, ms); timers.push(t); return t; };
 
+  /* question banks live in questions.js */
+  const QB = typeof QUIZ_BANK !== 'undefined' ? QUIZ_BANK : { 1: [], 2: [], 3: [] };
+  const FB = typeof FACT_BANK !== 'undefined' ? FACT_BANK : { 1: [], 2: [], 3: [] };
+  const WB = typeof WORD_BANK !== 'undefined' ? WORD_BANK : { 1: [], 2: [], 3: [] };
+  const LV_NAMES = ['Level 1 · Cadet', 'Level 2 · Pilot', 'Level 3 · Commander'];
 
   /* ---------- helpers for the graphical (canvas) games ---------- */
   const on = (target, ev, fn) => { target.addEventListener(ev, fn); cleanups.push(() => target.removeEventListener(ev, fn)); };
@@ -80,28 +86,19 @@
     .g-canvas{display:block;width:100%;max-width:480px;border-radius:12px;border:1px solid var(--line);background:#02061a;touch-action:none;margin-top:10px;cursor:crosshair}
     .g-touch{display:flex;gap:8px;margin-top:10px;max-width:480px}
     .g-touch .btn{flex:1;user-select:none;touch-action:none}
+    .g-lock{opacity:.6}
+    .g-stars{font-size:1.6rem;letter-spacing:.1em}
   `;
   document.head.appendChild(style);
 
-  const FACTS = [
-    ['There is no sound in space because there is no air to carry it.', true, 'Sound needs air or another material to travel through.'],
-    ['Astronauts float because there is no gravity at the space station.', false, 'Gravity is still strong there. They float because they are in constant free fall around Earth.'],
-    ['A day on Venus is longer than its year.', true, 'Venus spins so slowly that one turn takes longer than one trip around the Sun.'],
-    ['The Sun is a planet.', false, 'The Sun is a star.'],
-    ['The Moon has a night that lasts about 14 Earth days.', true, 'The Moon turns slowly, so its night is very long.'],
-    ['Mars looks red because of rusty iron dust.', true, 'Iron in the dust reacts with oxygen, like rust on Earth.'],
-    ['Astronauts can grow a little taller in space.', true, 'Their spines stretch without gravity pressing down.'],
-    ['Saturn is the only planet with rings.', false, 'Jupiter, Uranus and Neptune have rings too.'],
-    ['The space station circles Earth about every 90 minutes.', true, 'That is why the crew sees about 16 sunrises a day.'],
-    ['Radio messages from Mars reach Earth instantly.', false, 'They take between 3 and 22 minutes each way.'],
-    ['Jupiter is the largest planet in our solar system.', true, 'More than 1,000 Earths could fit inside it.'],
-    ['Stars twinkle because space is windy.', false, 'Twinkling happens when starlight passes through Earth\'s moving air.'],
-    ['Spacewalkers use tethers so they do not drift away.', true, 'Tools are tethered too.'],
-    ['The Moon makes its own light.', false, 'It reflects sunlight.']
-  ];
+  /* a question with its answer choices in a random order */
+  const shuffleQ = q => {
+    const idx = shuffle(q.options.map((_, i) => i));
+    return { ...q, options: idx.map(i => q.options[i]), answer: idx.indexOf(q.answer) };
+  };
 
-  /* shared engine for the two "put it in order" games */
-  const orderStart = (items, label) => a => {
+  /* shared engine for the "put it in order" games */
+  const orderStart = (items, label, need) => a => {
     let next = 0, miss = 0;
     a.innerHTML = `<p class="g-tag">${esc(label)} · Mistakes: <b id="gM">0</b></p>
       <div class="g-order">${shuffle(items.map((t, i) => [t, i])).map(([t, i]) => `<button class="opt" data-o="${i}">${esc(t)}</button>`).join('')}</div>`;
@@ -109,17 +106,26 @@
       if (b.dataset.o === undefined || b.disabled) return;
       if (+b.dataset.o === next) {
         b.disabled = true; b.classList.add('good'); b.textContent = `${next + 1}. ${b.textContent}`; next++;
-        if (next === items.length) after(() => end(miss, miss <= 2), 600);
+        if (next === items.length) after(() => end(miss, miss <= need), 600);
       } else {
         miss++; $('gM').textContent = miss; b.classList.add('bad'); after(() => b.classList.remove('bad'), 400);
       }
     };
   };
 
+  /* ====================================================================================
+     GAMES. A game with a "levels" list shows a level picker. Each level is an object of
+     settings that is passed to start(area, L). Level 1 keeps the old save keys.
+     ==================================================================================== */
   const GAMES = [
-    { id: 'quiz', icon: '🧠', name: 'Space Quiz Blitz', desc: 'Answer 8 random questions from the missions.', goal: '6 of 8 right', unit: '/8', xp: 15,
-      start(a) {
-        const qs = shuffle(MISSIONS.flatMap(m => m.steps)).slice(0, 8);
+    { id: 'quiz', icon: '🧠', name: 'Space Quiz Blitz', desc: 'Answer random space questions. Higher levels have harder questions.', xp: 15,
+      levels: [
+        { goal: '6 of 8 right', unit: '/8', n: 8, need: 6, xp: 15, pool: () => [...MISSIONS.flatMap(m => m.steps), ...QB[1]] },
+        { goal: '8 of 10 right', unit: '/10', n: 10, need: 8, xp: 25, pool: () => QB[2] },
+        { goal: '10 of 12 right', unit: '/12', n: 12, need: 10, xp: 40, pool: () => QB[3] }
+      ],
+      start(a, L) {
+        const qs = shuffle(L.pool()).slice(0, L.n).map(shuffleQ);
         let i = 0, score = 0, lock = false;
         const show = () => {
           lock = false; const q = qs[i];
@@ -131,14 +137,19 @@
           const q = qs[i], n = +b.dataset.n, ok = n === q.answer; if (ok) score++;
           a.querySelectorAll('.opt').forEach((x, k) => { if (k === q.answer) x.classList.add('good'); else if (k === n) x.classList.add('bad'); });
           a.insertAdjacentHTML('beforeend', `<p class="why">${ok ? '✅ ' : '❌ '}${esc(q.why)}</p>`);
-          after(() => { i++; i < qs.length ? show() : end(score, score >= 6); }, 1800);
+          after(() => { i++; i < qs.length ? show() : end(score, score >= L.need); }, 2000);
         };
         show();
       } },
 
-    { id: 'memory', icon: '🃏', name: 'Memory Match', desc: 'Flip cards and find all 8 matching pairs.', goal: '16 moves or fewer', unit: ' moves', low: true, xp: 15,
-      start(a) {
-        const em = ['🌍', '🌙', '☀️', '🪐', '⭐', '☄️', '🚀', '🛰️'];
+    { id: 'memory', icon: '🃏', name: 'Memory Match', desc: 'Flip cards and find all the matching pairs.', xp: 15, low: true,
+      levels: [
+        { goal: '12 moves or fewer (6 pairs)', unit: ' moves', pairs: 6, need: 12, xp: 15 },
+        { goal: '16 moves or fewer (8 pairs)', unit: ' moves', pairs: 8, need: 16, xp: 25 },
+        { goal: '28 moves or fewer (12 pairs)', unit: ' moves', pairs: 12, need: 28, xp: 40 }
+      ],
+      start(a, L) {
+        const em = ['🌍', '🌙', '☀️', '🪐', '⭐', '☄️', '🚀', '🛰️', '🧑‍🚀', '🌌', '🔭', '👽'].slice(0, L.pairs);
         const cards = shuffle([...em, ...em]);
         let open = [], moves = 0, found = 0, lock = false;
         a.innerHTML = `<p class="g-tag">Moves: <b id="gMv">0</b></p>
@@ -151,7 +162,7 @@
           const [x, y] = open; open = [];
           if (cards[+x.dataset.i] === cards[+y.dataset.i]) {
             found++; x.classList.add('ok'); y.classList.add('ok');
-            if (found === em.length) after(() => end(moves, moves <= 16), 600);
+            if (found === em.length) after(() => end(moves, moves <= L.need), 600);
           } else {
             lock = true;
             after(() => { [x, y].forEach(c => { c.classList.remove('up'); c.textContent = '❔'; }); lock = false; }, 800);
@@ -159,66 +170,99 @@
         };
       } },
 
-    { id: 'blast', icon: '☄️', name: 'Asteroid Blast', desc: 'Click each asteroid before it jumps away. 20 seconds!', goal: '12 hits', unit: ' hits', xp: 15,
-      start(a) {
+    { id: 'blast', icon: '☄️', name: 'Asteroid Blast', desc: 'Click each asteroid before it jumps away. 20 seconds!', xp: 15,
+      levels: [
+        { goal: '10 hits', unit: ' hits', gap: 1000, need: 10, xp: 15 },
+        { goal: '12 hits', unit: ' hits', gap: 800, need: 12, xp: 25 },
+        { goal: '15 hits', unit: ' hits', gap: 600, need: 15, xp: 40 }
+      ],
+      start(a, L) {
         let score = 0, left = 20, cur = -1;
         a.innerHTML = `<p class="g-tag">Time: <b id="gT">20</b>s · Hits: <b id="gS">0</b></p>
           <div class="g-blast">${Array.from({ length: 9 }, (_, i) => `<button class="g-cell" data-i="${i}" aria-label="Space">·</button>`).join('')}</div>`;
         const cells = [...a.querySelectorAll('.g-cell')];
         const spawn = () => { if (cur >= 0) cells[cur].textContent = '·'; cur = rnd(9); cells[cur].textContent = '☄️'; };
-        spawn(); every(spawn, 800);
-        every(() => { left--; $('gT').textContent = left; if (left <= 0) end(score, score >= 12); }, 1000);
+        spawn(); every(spawn, L.gap);
+        every(() => { left--; $('gT').textContent = left; if (left <= 0) end(score, score >= L.need); }, 1000);
         handler = b => {
           if (b.dataset.i !== undefined && +b.dataset.i === cur) { score++; $('gS').textContent = score; cells[cur].textContent = '💥'; cur = -1; }
         };
       } },
 
-    { id: 'scramble', icon: '🔤', name: 'Word Scramble', desc: 'Unscramble the space words.', goal: '4 of 6 right', unit: '/6', xp: 15,
-      start(a) {
-        const words = shuffle(['ROCKET', 'ORBIT', 'COMET', 'GALAXY', 'PLANET', 'ASTRONAUT', 'GRAVITY', 'NEBULA', 'METEOR', 'SATELLITE']).slice(0, 6);
+    { id: 'scramble', icon: '🔤', name: 'Word Scramble', desc: 'Unscramble the space words. Longer words at higher levels.', xp: 15,
+      levels: [
+        { goal: '4 of 6 right', unit: '/6', n: 6, need: 4, clue: true, xp: 15 },
+        { goal: '6 of 8 right', unit: '/8', n: 8, need: 6, clue: true, xp: 25 },
+        { goal: '7 of 10 right (clues are hidden)', unit: '/10', n: 10, need: 7, clue: false, xp: 40 }
+      ],
+      start(a, L, lv) {
+        const words = shuffle(WB[lv] || []).slice(0, L.n);
         let i = 0, score = 0, lock = false;
         const scr = w => { let s; do { s = shuffle([...w]).join(''); } while (s === w); return s; };
         const show = () => {
           lock = false;
-          a.innerHTML = `<span class="g-tag">Word ${i + 1} of ${words.length}</span><div class="g-big">${scr(words[i])}</div>
+          const wd = words[i];
+          a.innerHTML = `<span class="g-tag">Word ${i + 1} of ${words.length}</span><div class="g-big">${scr(wd.w)}</div>
+            ${L.clue ? `<p class="sub" id="gClue">Clue: ${esc(wd.h)}</p>`
+                     : `<button class="btn ghost" type="button" id="gClueBtn">💡 Show clue</button><p class="sub" id="gClue"></p>`}
             <form id="gForm" class="g-row"><input type="text" id="gIn" maxlength="14" autocomplete="off" aria-label="Your answer"><button class="btn" type="submit">Check</button></form>
             <p id="gMsg" class="sub"></p>`;
           $('gIn').focus();
         };
+        handler = b => {
+          if (b.id !== 'gClueBtn') return;
+          $('gClue').textContent = 'Clue: ' + words[i].h; b.disabled = true;
+        };
         submitH = () => {
           const v = $('gIn').value.trim().toUpperCase(); if (!v || lock) return; lock = true;
-          const ok = v === words[i]; if (ok) score++;
-          $('gMsg').textContent = ok ? '✅ Correct!' : `❌ It was ${words[i]}`;
-          after(() => { i++; i < words.length ? show() : end(score, score >= 4); }, 1200);
+          const ok = v === words[i].w; if (ok) score++;
+          $('gMsg').textContent = ok ? '✅ Correct!' : `❌ It was ${words[i].w}`;
+          after(() => { i++; i < words.length ? show() : end(score, score >= L.need); }, 1300);
         };
+        if (!words.length) return end(0, false, 'No words found. Make sure js/questions.js is loaded.');
         show();
       } },
 
     { id: 'launch', icon: '🚀', name: 'Launch Sequence', desc: 'Put the rocket launch steps in the right order.', goal: '2 mistakes or fewer', unit: ' mistakes', low: true, xp: 15,
-      start: orderStart(['Put on your spacesuit', 'Run the systems checklist', 'Load the fuel', 'Start the countdown', 'Ignite the engines', 'Liftoff!'], 'Click the steps in order') },
+      start: a => orderStart(['Put on your spacesuit', 'Run the systems checklist', 'Load the fuel', 'Start the countdown', 'Ignite the engines', 'Liftoff!'], 'Click the steps in order', 2)(a) },
 
-    { id: 'planets', icon: '🪐', name: 'Planet Order', desc: 'Click the planets from the Sun outward.', goal: '2 mistakes or fewer', unit: ' mistakes', low: true, xp: 15,
-      start: orderStart(['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'], 'Closest to the Sun first') },
+    { id: 'planets', icon: '🪐', name: 'Planet Order', desc: 'Click the planets in the right order.', xp: 15, low: true,
+      levels: [
+        { goal: '3 mistakes or fewer (4 inner planets)', unit: ' mistakes', need: 3, xp: 15, label: 'Closest to the Sun first', items: ['Mercury', 'Venus', 'Earth', 'Mars'] },
+        { goal: '2 mistakes or fewer (all 8 planets)', unit: ' mistakes', need: 2, xp: 25, label: 'Closest to the Sun first', items: ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'] },
+        { goal: '3 mistakes or fewer (by size)', unit: ' mistakes', need: 3, xp: 40, label: 'Smallest planet first', items: ['Mercury', 'Mars', 'Venus', 'Earth', 'Neptune', 'Uranus', 'Saturn', 'Jupiter'] }
+      ],
+      start: (a, L) => orderStart(L.items, L.label, L.need)(a) },
 
-    { id: 'satellite', icon: '🛰️', name: 'Find the Satellite', desc: 'A satellite hides between 1 and 100. Scan for it in 7 tries.', goal: 'Find it', unit: ' tries', low: true, xp: 15,
-      start(a) {
-        const target = 1 + rnd(100); let tries = 0;
-        a.innerHTML = `<p class="g-tag">Distance in thousands of km (1 to 100) · Tries: <b id="gTr">0</b>/7</p>
+    { id: 'satellite', icon: '🛰️', name: 'Find the Satellite', desc: 'A satellite is hiding. Scan for it and follow the higher or lower clues.', xp: 15, low: true,
+      levels: [
+        { goal: 'Find it (1 to 50, 7 tries)', unit: ' tries', max: 50, tries: 7, xp: 15 },
+        { goal: 'Find it (1 to 100, 7 tries)', unit: ' tries', max: 100, tries: 7, xp: 25 },
+        { goal: 'Find it (1 to 500, 9 tries)', unit: ' tries', max: 500, tries: 9, xp: 40 }
+      ],
+      start(a, L) {
+        const target = 1 + rnd(L.max); let tries = 0;
+        a.innerHTML = `<p class="g-tag">Distance in thousands of km (1 to ${L.max}) · Tries: <b id="gTr">0</b>/${L.tries}</p>
           <form id="gForm" class="g-row"><input type="text" inputmode="numeric" id="gIn" maxlength="3" autocomplete="off" aria-label="Your guess"><button class="btn" type="submit">Scan</button></form>
           <p id="gMsg" class="sub"></p>`;
         $('gIn').focus();
         submitH = () => {
           const n = parseInt($('gIn').value, 10);
-          if (!(n >= 1 && n <= 100)) { $('gMsg').textContent = 'Type a number from 1 to 100.'; return; }
+          if (!(n >= 1 && n <= L.max)) { $('gMsg').textContent = `Type a number from 1 to ${L.max}.`; return; }
           tries++; $('gTr').textContent = tries; $('gIn').value = '';
           if (n === target) return end(tries, true);
-          if (tries >= 7) return end(tries, false, `The satellite was at ${target}.`);
+          if (tries >= L.tries) return end(tries, false, `The satellite was at ${target}.`);
           $('gMsg').textContent = n < target ? '⬆ Higher!' : '⬇ Lower!';
         };
       } },
 
-    { id: 'reflex', icon: '⚡', name: 'Docking Reflex', desc: 'Click the pad the moment it turns green. 5 rounds.', goal: 'Average under 450 ms', unit: ' ms', low: true, xp: 15,
-      start(a) {
+    { id: 'reflex', icon: '⚡', name: 'Docking Reflex', desc: 'Click the pad the moment it turns green. 5 rounds.', xp: 15, low: true,
+      levels: [
+        { goal: 'Average under 600 ms', unit: ' ms', need: 600, xp: 15 },
+        { goal: 'Average under 450 ms', unit: ' ms', need: 450, xp: 25 },
+        { goal: 'Average under 350 ms', unit: ' ms', need: 350, xp: 40 }
+      ],
+      start(a, L) {
         let round = 0, total = 0, t0 = 0, ready = false, busy = false, timer;
         a.innerHTML = `<p class="g-tag">Round <b id="gR">1</b> of 5. Clicking too early restarts the round.</p><button class="g-pad" id="gPad">Get ready…</button>`;
         const pad = $('gPad');
@@ -232,15 +276,20 @@
           const ms = Math.round(performance.now() - t0); total += ms; round++;
           ready = false; busy = true; pad.className = 'g-pad'; pad.textContent = `${ms} ms`;
           $('gR').textContent = Math.min(round + 1, 5);
-          if (round >= 5) after(() => { const avg = Math.round(total / 5); end(avg, avg < 450); }, 900);
+          if (round >= 5) after(() => { const avg = Math.round(total / 5); end(avg, avg < L.need); }, 900);
           else after(arm, 900);
         };
         arm();
       } },
 
-    { id: 'facts', icon: '🧪', name: 'Fact or Fiction', desc: 'Is the space statement true or false?', goal: '8 of 10 right', unit: '/10', xp: 15,
-      start(a) {
-        const qs = shuffle(FACTS).slice(0, 10);
+    { id: 'facts', icon: '🧪', name: 'Fact or Fiction', desc: 'Is the space statement true or false? Harder facts at higher levels.', xp: 15,
+      levels: [
+        { goal: '8 of 10 right', unit: '/10', n: 10, need: 8, xp: 15 },
+        { goal: '10 of 12 right', unit: '/12', n: 12, need: 10, xp: 25 },
+        { goal: '12 of 14 right', unit: '/14', n: 14, need: 12, xp: 40 }
+      ],
+      start(a, L, lv) {
+        const qs = shuffle(FB[lv] || []).slice(0, L.n);
         let i = 0, score = 0, lock = false;
         const show = () => {
           lock = false;
@@ -251,21 +300,29 @@
           if (b.dataset.t === undefined || lock) return; lock = true;
           const ok = (b.dataset.t === '1') === qs[i][1]; if (ok) score++;
           a.insertAdjacentHTML('beforeend', `<p class="why">${ok ? '✅ Right! ' : '❌ Not quite. '}${esc(qs[i][2])}</p>`);
-          after(() => { i++; i < qs.length ? show() : end(score, score >= 8); }, 1800);
+          after(() => { i++; i < qs.length ? show() : end(score, score >= L.need); }, 2000);
         };
+        if (!qs.length) return end(0, false, 'No facts found. Make sure js/questions.js is loaded.');
         show();
       } },
 
-    { id: 'math', icon: '🔢', name: 'Oxygen Math', desc: 'Solve as many sums as you can in 30 seconds.', goal: '8 correct', unit: ' correct', xp: 15,
-      start(a) {
-        let score = 0, left = 30, ans = 0;
+    { id: 'math', icon: '🔢', name: 'Oxygen Math', desc: 'Solve as many sums as you can before time runs out.', xp: 15,
+      levels: [
+        { goal: '6 correct in 30 seconds', unit: ' correct', time: 30, need: 6, xp: 15, ops: ['+', '-'], a: 18, b: 8 },
+        { goal: '8 correct in 30 seconds', unit: ' correct', time: 30, need: 8, xp: 25, ops: ['+', '-', '*'], a: 18, b: 8, mx: 8 },
+        { goal: '12 correct in 40 seconds', unit: ' correct', time: 40, need: 12, xp: 40, ops: ['+', '-', '*', '/'], a: 98, b: 48, mx: 11 }
+      ],
+      start(a, L) {
+        let score = 0, left = L.time, ans = 0;
         const make = () => {
-          let x = 2 + rnd(18), y = 2 + rnd(8); const t = rnd(3);
-          if (t === 0) { ans = x + y; return `${x} + ${y}`; }
-          if (t === 1) { if (y > x) [x, y] = [y, x]; ans = x - y; return `${x} − ${y}`; }
-          x = 2 + rnd(8); ans = x * y; return `${x} × ${y}`;
+          const op = L.ops[rnd(L.ops.length)];
+          let x = 2 + rnd(L.a), y = 2 + rnd(L.b);
+          if (op === '+') { ans = x + y; return `${x} + ${y}`; }
+          if (op === '-') { if (y > x) [x, y] = [y, x]; ans = x - y; return `${x} − ${y}`; }
+          if (op === '*') { x = 2 + rnd(L.mx); ans = x * y; if (L.mx > 8) { y = 2 + rnd(10); ans = x * y; } return `${x} × ${y}`; }
+          y = 2 + rnd(9); ans = 2 + rnd(10); x = y * ans; return `${x} ÷ ${y}`;
         };
-        a.innerHTML = `<p class="g-tag">Time: <b id="gT">30</b>s · Correct: <b id="gS">0</b></p><div class="g-big" id="gQ"></div>
+        a.innerHTML = `<p class="g-tag">Time: <b id="gT">${L.time}</b>s · Correct: <b id="gS">0</b></p><div class="g-big" id="gQ"></div>
           <form id="gForm" class="g-row"><input type="text" inputmode="numeric" id="gIn" maxlength="4" autocomplete="off" aria-label="Answer"><button class="btn" type="submit">Go</button></form>`;
         const next = () => { $('gQ').textContent = make() + ' = ?'; $('gIn').value = ''; $('gIn').focus(); };
         next();
@@ -274,12 +331,17 @@
           if (parseInt($('gIn').value, 10) === ans) { score++; $('gS').textContent = score; }
           next();
         };
-        every(() => { left--; $('gT').textContent = left; if (left <= 0) end(score, score >= 8); }, 1000);
+        every(() => { left--; $('gT').textContent = left; if (left <= 0) end(score, score >= L.need); }, 1000);
       } },
 
     /* ================= GRAPHICAL GAMES ================= */
-    { id: 'shooter', icon: '🔫', name: 'Asteroid Shooter', desc: 'Steer your ship and blast falling asteroids. 30 seconds, 3 lives!', goal: '15 asteroids', unit: ' asteroids', xp: 15,
-      start(a) {
+    { id: 'shooter', icon: '🔫', name: 'Asteroid Shooter', desc: 'Steer your ship and blast falling asteroids. 30 seconds, 3 lives!', xp: 15,
+      levels: [
+        { goal: '10 asteroids', unit: ' asteroids', need: 10, gap: 0.7, vmin: 60, vspan: 60, xp: 15 },
+        { goal: '15 asteroids', unit: ' asteroids', need: 15, gap: 0.5, vmin: 70, vspan: 80, xp: 25 },
+        { goal: '22 asteroids', unit: ' asteroids', need: 22, gap: 0.36, vmin: 100, vspan: 110, xp: 40 }
+      ],
+      start(a, L) {
         const W = 480, H = 360;
         a.innerHTML = `<p class="g-tag">Move with your mouse, finger or the ← → keys. Your ship fires by itself.</p>`;
         const [c, x] = canvas(a, W, H), keys = keyboard(), stars = makeStars(W, H);
@@ -292,7 +354,7 @@
           if (keys.arrowright || keys.d) sx += 280 * dt;
           sx = Math.max(18, Math.min(W - 18, sx));
           fireT -= dt; if (fireT <= 0) { bullets.push({ x: sx, y: H - 48 }); fireT = 0.25; }
-          spawnT -= dt; if (spawnT <= 0) { rocks.push({ x: 24 + rnd(W - 48), y: -24, r: 12 + rnd(12), v: 70 + rnd(80), rot: 0 }); spawnT = 0.5 + Math.random() * 0.3; }
+          spawnT -= dt; if (spawnT <= 0) { rocks.push({ x: 24 + rnd(W - 48), y: -24, r: 12 + rnd(12), v: L.vmin + rnd(L.vspan), rot: 0 }); spawnT = L.gap + Math.random() * 0.3; }
           bullets.forEach(b => { b.y -= 430 * dt; });
           rocks.forEach(r => { r.y += r.v * dt; r.rot += dt * 2; });
           stars.forEach(s => { s.y += s.s * dt; if (s.y > H) { s.y = 0; s.x = rnd(W); } });
@@ -318,12 +380,17 @@
           x.fillStyle = '#ff9d3d'; x.beginPath(); x.moveTo(-5, 10); x.lineTo(0, 14 + Math.random() * 10); x.lineTo(5, 10); x.fill();
           x.restore();
           hud(x, `Hits: ${score}   Lives: ${'❤'.repeat(Math.max(0, lives))}   Time: ${Math.max(0, Math.ceil(left))}s`, W);
-          if (lives <= 0 || left <= 0) end(score, score >= 15);
+          if (lives <= 0 || left <= 0) end(score, score >= L.need);
         });
       } },
 
-    { id: 'lander', icon: '🛬', name: 'Rocket Lander', desc: 'Fire your thrusters and land softly on the green pad.', goal: 'Land safely', unit: '% fuel left', xp: 15, winOnly: true,
-      start(a) {
+    { id: 'lander', icon: '🛬', name: 'Rocket Lander', desc: 'Fire your thrusters and land softly on the green pad.', unit: '% fuel left', xp: 15, winOnly: true,
+      levels: [
+        { goal: 'Land safely (wide pad)', unit: '% fuel left', padW: 140, vyMax: 45, vxMax: 30, xp: 15 },
+        { goal: 'Land safely', unit: '% fuel left', padW: 90, vyMax: 35, vxMax: 20, xp: 25 },
+        { goal: 'Land safely (tiny pad, gentle touchdown)', unit: '% fuel left', padW: 56, vyMax: 28, vxMax: 14, xp: 40 }
+      ],
+      start(a, L) {
         const W = 480, H = 360, G = H - 24, stars = makeStars(W, H);
         a.innerHTML = `<p class="g-tag">Hold ↑ / Space (or 🔥) to fire the engine, ← → to steer. Touch down slowly. Fuel: <b id="gF">100</b>%</p>`;
         const [c, x] = canvas(a, W, H), keys = keyboard(), touch = { up: false, l: false, r: false };
@@ -333,7 +400,7 @@
           on(b, 'pointerdown', e => { e.preventDefault(); touch[k] = true; });
           ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => on(b, ev, () => { touch[k] = false; }));
         });
-        const pad = { x: 40 + rnd(W - 170), w: 90 };
+        const pad = { x: 30 + rnd(W - 60 - L.padW), w: L.padW };
         let px = 60 + rnd(W - 120), py = 40, vx = (Math.random() - 0.5) * 40, vy = 0, fuel = 100;
         loop(dt => {
           const up = keys.arrowup || keys.w || keys[' '] || touch.up, lf = keys.arrowleft || keys.a || touch.l, rt = keys.arrowright || keys.d || touch.r;
@@ -358,7 +425,7 @@
           x.fillStyle = '#5ab0ff'; x.beginPath(); x.arc(0, -4, 4, 0, 7); x.fill();
           x.strokeStyle = '#dfe9ff'; x.lineWidth = 2; x.beginPath(); x.moveTo(-8, 12); x.lineTo(-13, 16); x.moveTo(8, 12); x.lineTo(13, 16); x.stroke();
           x.restore();
-          const safe = Math.abs(vy) < 35 && Math.abs(vx) < 20;
+          const safe = Math.abs(vy) < L.vyMax && Math.abs(vx) < L.vxMax;
           x.fillStyle = safe ? '#37d67a' : '#ff5d6c';
           x.font = 'bold 14px sans-serif'; x.textAlign = 'left'; x.textBaseline = 'top';
           x.fillText(`Down speed: ${Math.round(vy)}   Side speed: ${Math.round(Math.abs(vx))}   ${safe ? 'SAFE' : 'TOO FAST'}`, 10, 8);
@@ -366,13 +433,18 @@
           if (py + 16 >= G) {
             const onPad = px > pad.x && px < pad.x + pad.w;
             if (safe && onPad) end(Math.round(fuel), true, 'Perfect soft landing!');
-            else end(0, false, !onPad ? 'You missed the landing pad.' : 'Too fast! Keep down speed under 35 and side speed under 20.');
+            else end(0, false, !onPad ? 'You missed the landing pad.' : `Too fast! Keep down speed under ${L.vyMax} and side speed under ${L.vxMax}.`);
           }
         });
       } },
 
-    { id: 'catcher', icon: '🌟', name: 'Star Catcher', desc: 'Move your astronaut to catch stars and dodge space junk. 30 seconds!', goal: '20 stars', unit: ' stars', xp: 15,
-      start(a) {
+    { id: 'catcher', icon: '🌟', name: 'Star Catcher', desc: 'Move your astronaut to catch stars and dodge space junk. 30 seconds!', xp: 15,
+      levels: [
+        { goal: '15 stars', unit: ' stars', need: 15, junk: 0.2, gap: 0.5, vmin: 90, vspan: 70, xp: 15 },
+        { goal: '20 stars', unit: ' stars', need: 20, junk: 0.3, gap: 0.42, vmin: 100, vspan: 90, xp: 25 },
+        { goal: '28 stars', unit: ' stars', need: 28, junk: 0.4, gap: 0.32, vmin: 130, vspan: 110, xp: 40 }
+      ],
+      start(a, L) {
         const W = 480, H = 360, stars = makeStars(W, H);
         a.innerHTML = `<p class="g-tag">Move with your mouse, finger or the ← → keys. Stars +1, junk −2.</p>`;
         const [c, x] = canvas(a, W, H), keys = keyboard();
@@ -384,7 +456,7 @@
           if (keys.arrowleft || keys.a) px -= 300 * dt;
           if (keys.arrowright || keys.d) px += 300 * dt;
           px = Math.max(24, Math.min(W - 24, px));
-          spawnT -= dt; if (spawnT <= 0) { items.push({ x: 24 + rnd(W - 48), y: -20, v: 100 + rnd(90), junk: Math.random() < 0.3 }); spawnT = 0.42; }
+          spawnT -= dt; if (spawnT <= 0) { items.push({ x: 24 + rnd(W - 48), y: -20, v: L.vmin + rnd(L.vspan), junk: Math.random() < L.junk }); spawnT = L.gap; }
           items.forEach(i => { i.y += i.v * dt; });
           items.forEach(i => {
             if (Math.abs(i.x - px) < 30 && Math.abs(i.y - (H - 40)) < 28) {
@@ -401,45 +473,80 @@
           items.forEach(i => x.fillText(i.junk ? '🛰️' : '⭐', i.x, i.y));
           x.font = '36px serif'; x.fillText('🧑‍🚀', px, H - 40);
           hud(x, `Stars: ${score}   Time: ${Math.max(0, Math.ceil(left))}s`, W);
-          if (left <= 0) end(score, score >= 20);
+          if (left <= 0) end(score, score >= L.need);
         });
       } }
   ];
 
-  const fmt = (g, s) => `${s}${g.unit}`;
-  const bestText = g => (db.best[g.id] != null ? `Best: ${fmt(g, db.best[g.id])}` : 'Not played yet') + (db.won[g.id] ? ' · ✔ XP earned' : '');
+  /* ---------- level bookkeeping ---------- */
+  const lvKey = (g, n) => (!g.levels || n === 1) ? g.id : `${g.id}-L${n}`;     // level 1 keeps the old save key
+  const unitOf = (g, n) => (g.levels && g.levels[n - 1].unit != null) ? g.levels[n - 1].unit : (g.unit || '');
+  const goalOf = (g, n) => g.levels ? g.levels[n - 1].goal : g.goal;
+  const unlocked = (g, n) => n === 1 || UNLOCK_ALL || !!db.won[lvKey(g, n - 1)];
+  const stars = g => g.levels.map((_, i) => (db.won[lvKey(g, i + 1)] ? '⭐' : '☆')).join(' ');
+  const bestLine = (g, n) => {
+    const k = lvKey(g, n);
+    return (db.best[k] != null ? `Best: ${db.best[k]}${unitOf(g, n)}` : 'Not played yet') + (db.won[k] ? ' · ✔ XP earned' : '');
+  };
 
   function hub() {
     clearTimers(); handler = null; submitH = null; current = null;
     view.innerHTML = `<div id="gamesPage"><h2>🎮 Games</h2>
-      <p class="sub">${GAMES.length} quick space games, including graphical arcade games. Reach a game's goal for the first time to earn +15 XP!</p>
+      <p class="sub">${GAMES.length} space games, most with 3 levels. Win a level for the first time to earn bonus XP and unlock the next level!</p>
       <div class="g-grid">${GAMES.map(g => `
         <div class="card g-card"><div class="g-ic">${g.icon}</div><b>${esc(g.name)}</b>
-          <small>${esc(g.desc)}</small><small>Goal: ${esc(g.goal)}</small><small>${esc(bestText(g))}</small>
+          <small>${esc(g.desc)}</small>
+          ${g.levels ? `<small>Levels: <span class="g-stars">${stars(g)}</span></small>`
+                     : `<small>Goal: ${esc(g.goal)}</small><small>${esc(bestLine(g, 1))}</small>`}
           <button class="btn" data-g="${g.id}">Play ➜</button></div>`).join('')}</div></div>`;
   }
 
-  function play(id) {
+  function picker(g) {
     clearTimers(); handler = null; submitH = null;
-    current = GAMES.find(x => x.id === id);
+    current = g;
     view.innerHTML = `<div id="gamesPage"><button class="btn ghost" data-act="hub">⬅ All games</button>
-      <h2 style="margin-top:12px">${current.icon} ${esc(current.name)}</h2>
-      <p class="sub">${esc(current.desc)} Goal: ${esc(current.goal)}.</p><div id="gArea" class="card g-area"></div></div>`;
-    current.start($('gArea'));
+      <h2 style="margin-top:12px">${g.icon} ${esc(g.name)}</h2>
+      <p class="sub">${esc(g.desc)} Pick a level.</p>
+      <div class="g-grid">${g.levels.map((L, i) => {
+        const n = i + 1, open = unlocked(g, n);
+        return `<div class="card g-card ${open ? '' : 'g-lock'}"><div class="g-ic">${'⭐'.repeat(n)}</div><b>${LV_NAMES[i]}</b>
+          <small>Goal: ${esc(L.goal)}</small><small>${esc(bestLine(g, n))}</small><small>Bonus: +${L.xp || g.xp} XP</small>
+          ${open ? `<button class="btn" data-g="${g.id}" data-l="${n}">Play ➜</button>`
+                 : `<small>🔒 Win level ${n - 1} to unlock</small><button class="btn ghost" disabled>Locked</button>`}</div>`;
+      }).join('')}</div></div>`;
+  }
+
+  function play(id, lv) {
+    clearTimers(); handler = null; submitH = null;
+    const g = GAMES.find(x => x.id === id);
+    if (g.levels && !lv) return picker(g);
+    current = g; curLv = lv || 1; curL = g.levels ? g.levels[curLv - 1] : {};
+    const title = g.levels ? `${g.icon} ${esc(g.name)} · ${LV_NAMES[curLv - 1]}` : `${g.icon} ${esc(g.name)}`;
+    view.innerHTML = `<div id="gamesPage"><button class="btn ghost" data-act="${g.levels ? 'levels' : 'hub'}" data-g="${g.id}">⬅ ${g.levels ? 'Levels' : 'All games'}</button>
+      <h2 style="margin-top:12px">${title}</h2>
+      <p class="sub">${esc(g.desc)} Goal: ${esc(goalOf(g, curLv))}.</p><div id="gArea" class="card g-area"></div></div>`;
+    g.start($('gArea'), curL, curLv);
   }
 
   function end(score, win, extra = '') {
     clearTimers(); handler = null; submitH = null;
-    const g = current, prev = db.best[g.id];
+    const g = current, n = curLv, L = curL, key = lvKey(g, n), unit = unitOf(g, n), xp = L.xp || g.xp;
+    const prev = db.best[key];
     const better = prev == null || (g.low ? score < prev : score > prev);
-    if (better && (win || !(g.low || g.winOnly))) db.best[g.id] = score;
+    if (better && (win || !(g.low || g.winOnly))) db.best[key] = score;
     let bonus = '';
-    if (win && !db.won[g.id] && window.addTrainerXp) { db.won[g.id] = true; window.addTrainerXp(g.xp); bonus = `<p class="g-tag">🎉 +${g.xp} XP bonus!</p>`; }
+    if (win && !db.won[key] && window.addTrainerXp) { db.won[key] = true; window.addTrainerXp(xp); bonus = `<p class="g-tag">🎉 +${xp} XP bonus!</p>`; }
     saveDb();
-    $('gArea').innerHTML = `<h3>${win ? '🏅 Great job!' : '🛰️ Good try!'}</h3><div class="g-big">${esc(fmt(g, score))}</div>
+    const next = g.levels && win && n < g.levels.length;
+    $('gArea').innerHTML = `<h3>${win ? '🏅 Great job!' : '🛰️ Good try!'}</h3><div class="g-big">${esc(score + unit)}</div>
       ${extra ? `<p class="sub">${esc(extra)}</p>` : ''}
-      <p class="sub">Best: ${db.best[g.id] != null ? esc(fmt(g, db.best[g.id])) : '-'} · Goal: ${esc(g.goal)}</p>${bonus}
-      <div style="margin-top:12px"><button class="btn" data-g="${g.id}">Play again</button> <button class="btn ghost" data-act="hub">All games</button></div>`;
+      ${win && g.levels ? `<p class="sub">Level ${n} complete!${next ? ` Level ${n + 1} is unlocked.` : ' You finished every level of this game!'}</p>` : ''}
+      <p class="sub">Best: ${db.best[key] != null ? esc(db.best[key] + unit) : '-'} · Goal: ${esc(goalOf(g, n))}</p>${bonus}
+      <div style="margin-top:12px">
+        ${next ? `<button class="btn" data-g="${g.id}" data-l="${n + 1}">Next level ➜</button> ` : ''}
+        <button class="btn ${next ? 'ghost' : ''}" data-g="${g.id}" ${g.levels ? `data-l="${n}"` : ''}>Play again</button>
+        ${g.levels ? `<button class="btn ghost" data-act="levels" data-g="${g.id}">Levels</button> ` : ''}
+        <button class="btn ghost" data-act="hub">All games</button></div>`;
   }
 
   /* open the Games page from the side menu (runs before script.js's own handler) */
@@ -454,9 +561,10 @@
   view.addEventListener('click', e => {
     if (!e.target.closest('#gamesPage')) return;
     const b = e.target.closest('button');
-    if (!b) return;
+    if (!b || b.disabled) return;
     if (b.dataset.act === 'hub') return hub();
-    if (b.dataset.g) return play(b.dataset.g);
+    if (b.dataset.act === 'levels') return picker(GAMES.find(x => x.id === b.dataset.g));
+    if (b.dataset.g) return play(b.dataset.g, b.dataset.l ? +b.dataset.l : 0);
     if (handler) handler(b);
   });
 

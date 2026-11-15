@@ -1,10 +1,19 @@
 /* db.js - free player database using SQLite (built into Node 22.13+, no account, no extra packages).
-   It keeps one file: data/astro.db. If SQLite is not available the game still works with browser-only saves. */
+   It keeps one file: data/astro.db. If SQLite is not available the game still works with browser-only saves.
+   Registration is by astronaut name only: the same name always maps to the same player id. */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const NAME_OK = /^[\p{L}\p{N} _-]{2,24}$/u;
 const cleanName = s => String(s ?? '').replace(/[<>&"'`]/g, '').replace(/\s+/g, ' ').trim().slice(0, 24);
+
+/* the same name (any capital letters) always gives the same id, shaped like a UUID */
+const idForName = name => {
+  const h = crypto.createHash('sha256').update('astro-player:' + name.toLowerCase()).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+};
 
 export async function openPlayerDb(dir, file = 'astro.db') {
   let DatabaseSync;
@@ -47,6 +56,19 @@ export async function openPlayerDb(dir, file = 'astro.db') {
   };
 
   return {
+    /* sign up or sign back in with just a name */
+    login(rawName, ip = '?') {
+      if (limited(ip)) return { status: 429, body: { error: 'Too many tries. Wait a minute and try again.' } };
+      const name = cleanName(rawName);
+      if (!NAME_OK.test(name)) return { status: 400, body: { error: 'Use 2 to 24 letters or numbers for your name.' } };
+      const id = idForName(name);
+      const row = getOne.get(id);
+      if (!row) return { status: 200, body: { id, found: false, name } };
+      let data = {};
+      try { data = JSON.parse(row.data); } catch { /* keep empty */ }
+      return { status: 200, body: { id, found: true, name: row.name, xp: row.xp, data, updated_at: row.updated_at } };
+    },
+
     save(body, ip = '?') {
       if (limited(ip)) return { status: 429, body: { error: 'Too many saves. Try again in a minute.' } };
       if (!body || typeof body !== 'object' || !UUID.test(String(body.id))) return { status: 400, body: { error: 'Bad player id' } };
